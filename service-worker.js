@@ -1,9 +1,13 @@
 /* ============================================================================
    INTESA — Service Worker
-   Strategia offline-first sull'app-shell. Percorsi relativi: funziona anche
-   in una sottocartella di GitHub Pages (es. /nome-repo/).
+   Strategia "prima la rete, poi la cache" (network-first):
+   • ONLINE  → a ogni apertura/reload usa la versione FRESCA dalla rete e
+               aggiorna la cache. Non serve più cambiare versione a ogni deploy.
+   • OFFLINE → usa l'ultima versione salvata in cache (l'app resta usabile).
+   Percorsi relativi: funziona anche in una sottocartella di GitHub Pages.
    ========================================================================== */
-const CACHE = 'intesa-v1';
+const CACHE = 'intesa';        // non è più necessario cambiarlo a ogni modifica
+const TIMEOUT = 4000;          // ms max di attesa rete prima di usare la cache
 const ASSETS = [
   './',
   './index.html',
@@ -16,12 +20,12 @@ const ASSETS = [
   './icons/favicon-64.png',
 ];
 
+// Pre-carica l'app-shell (serve solo per il PRIMO avvio offline) e attiva subito.
 self.addEventListener('install', (e) => {
-  e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())
-  );
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
 
+// Rimuove eventuali cache vecchie e prende il controllo delle pagine aperte.
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
@@ -30,22 +34,24 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// Cache-first per l'app-shell; la rete alimenta la cache quando disponibile.
+// Network-first: prova la rete (con timeout), aggiorna la cache, poi fallback.
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  e.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req)
-        .then((res) => {
-          if (res && res.status === 200 && res.type === 'basic') {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => caches.match('./index.html')); // fallback offline per la navigazione
-    })
-  );
+  e.respondWith(networkFirst(req));
 });
+
+async function networkFirst(req) {
+  const cache = await caches.open(CACHE);
+  try {
+    const fresh = await Promise.race([
+      fetch(req),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), TIMEOUT)),
+    ]);
+    if (fresh && fresh.status === 200 && fresh.type === 'basic') cache.put(req, fresh.clone());
+    return fresh;
+  } catch (err) {
+    const cached = await cache.match(req);
+    return cached || cache.match('./index.html'); // fallback offline per la navigazione
+  }
+}
