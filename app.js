@@ -177,8 +177,15 @@ function subScores(sol, input, cfg, refs) {
   if (input.dispOggi > 0) comfort = Math.min(comfort, 100 * (1 - clamp(m.pagatoOggi / input.dispOggi, 0, 1)));
   comfort = clamp(comfort, 0, 100);
 
+  // VPL: normalizzato min-max sul set dei candidati e "clampato" a [0,100] per
+  // garantire l'invariante di scala anche in configurazioni limite (set degenere,
+  // coefficienti VPL personalizzati). NB (V1, intenzionale): il VPL è una metrica
+  // COMPOSITA (calcVPL combina venduto, incasso, % liquidità, BNPL, credito):
+  // alcune di queste grandezze compaiono anche come sotto-punteggi atomici
+  // (liquidita, strumenti, bonifico). La sovrapposizione è voluta — il VPL è
+  // l'indicatore commerciale di sintesi — e non viene deduplicata in V1.
   let vpl = 50;
-  if (refs.vplMax > refs.vplMin) vpl = (100 * (m.vplRaw - refs.vplMin)) / (refs.vplMax - refs.vplMin);
+  if (refs.vplMax > refs.vplMin) vpl = clamp((100 * (m.vplRaw - refs.vplMin)) / (refs.vplMax - refs.vplMin), 0, 100);
 
   // Quota di bonifico (acconto + credito) sul prezzo: base della commissione
   // del consulente. Più bonifico = più "incassato" per il consulente.
@@ -332,7 +339,7 @@ function rankCandidates(candidates, input, cfg) {
     if (Math.abs(sol._sc - best._sc) < 1e-9 && sameSchedule(sol.totalM, best.totalM) &&
         providerPrefCompare(sol, best, order) > 0) best = sol;
   }
-  best.score = Math.round(best._sc);
+  best.score = clamp(Math.round(best._sc), 0, 100);
   best.sub = best._ss;
   best.candidateCount = candidates.length;
   return best;
@@ -675,19 +682,30 @@ function restoreFocus(f) {
 }
 
 /* ============================================================================
-   VALIDITÀ (🟢 🟡 🔴)
+   COMPATIBILITÀ E OTTIMIZZABILITÀ — due assi distinti
+   - Il PUNTEGGIO (gauge) esprime SOLO la qualità della soluzione (0-100).
+   - La COMPATIBILITÀ (badge) esprime il rispetto dei vincoli del cliente:
+     Compatibile / Al limite / Non compatibile, con il motivo quando serve.
+   - L'OTTIMIZZABILITÀ (nota separata, solo in manuale) segnala se esiste una
+     proposta con punteggio più alto. Non viene mai fusa con la compatibilità.
    ========================================================================== */
-function getValidity(sol, mode) {
-  if (!sol) return { level: 'bad', label: 'Proposta non compatibile' };
+function getCompatibility(sol) {
+  if (!sol) return { level: 'bad', label: 'Non compatibile', reason: '' };
   const inp = state.input, m = sol.metrics;
   const overMax = inp.maxMensile > 0 && m.peak > inp.maxMensile + 0.5;
   const overDisp = inp.dispOggi > 0 && m.pagatoOggi > inp.dispOggi + 0.5;
-  if (mode === 'auto') return (overMax || overDisp) ? { level: 'warn', label: 'Valida ma al limite' } : { level: 'ok', label: 'Proposta valida' };
-  const opt = optimize(inp, CONFIG);
-  const optScore = opt ? opt.score : sol.score;
-  if (overMax || overDisp) return { level: 'warn', label: 'Valida ma al limite' };
-  if (sol.score >= optScore - 4) return { level: 'ok', label: 'Proposta valida' };
-  return { level: 'warn', label: 'Valida ma migliorabile' };
+  if (!overMax && !overDisp) return { level: 'ok', label: 'Compatibile', reason: '' };
+  const r = [];
+  if (overMax) r.push(`picco rata ${eur(m.peak)} oltre il max ${eur(inp.maxMensile)}`);
+  if (overDisp) r.push(`pagato oggi ${eur(m.pagatoOggi)} oltre la disponibilità ${eur(inp.dispOggi)}`);
+  return { level: 'warn', label: 'Al limite', reason: r.join(' · ') };
+}
+// Solo in manuale: esiste una proposta automatica con punteggio più alto?
+function getOptimizable(sol) {
+  if (!sol) return null;
+  const opt = optimize(state.input, CONFIG);
+  if (opt && opt.score > sol.score + 4) return `Ottimizzabile: in automatico si raggiunge ${opt.score}/100.`;
+  return null;
 }
 
 /* ============================================================================
@@ -697,7 +715,7 @@ function renderResult(sol, mode) {
   const root = $('#result'); root.innerHTML = '';
   if (!sol) { root.appendChild(renderNoSolution(mode)); $('#actions').hidden = true; return; }
   $('#actions').hidden = false;
-  root.appendChild(renderVerdict(sol, getValidity(sol, mode)));
+  root.appendChild(renderVerdict(sol, mode));
   root.appendChild(renderKpis(sol));
   if (sol.metrics.costiExtra > 0.005) root.appendChild(el('div', 'rounded-note',
     `+ costo extra a carico cliente <span class="num">${eur(sol.metrics.costiExtra)}</span> · totale pagato <span class="num">${eur(sol.metrics.totalePagatoCliente)}</span>`));
@@ -708,10 +726,12 @@ function renderResult(sol, mode) {
   root.appendChild(renderPlan(sol));
 }
 
-function renderVerdict(sol, v) {
+function renderVerdict(sol, mode) {
   const wrap = el('div', 'verdict');
-  const C = v.level === 'ok' ? 'var(--emerald)' : v.level === 'warn' ? 'var(--amber)' : 'var(--red)';
-  const score = sol.score || 0, circ = 2 * Math.PI * 40, off = circ * (1 - score / 100);
+  // Il gauge rappresenta ESCLUSIVAMENTE la qualità (punteggio 0-100): usa
+  // l'accento del brand, indipendente dalla compatibilità coi vincoli.
+  const C = 'var(--emerald)';
+  const score = clamp(sol.score || 0, 0, 100), circ = 2 * Math.PI * 40, off = circ * (1 - score / 100);
   const gauge = el('div', 'gauge');
   gauge.innerHTML = `
     <svg width="92" height="92" viewBox="0 0 92 92">
@@ -719,10 +739,22 @@ function renderVerdict(sol, v) {
       <circle class="gauge-arc" cx="46" cy="46" r="40" fill="none" stroke="${C}" stroke-width="8" stroke-linecap="round"
         stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" style="transition:stroke-dashoffset .5s ease"/>
     </svg>
-    <div class="gauge-num"><span class="gauge-score" style="color:${C}">${score}</span><span class="gauge-max">/ 100</span></div>`;
+    <div class="gauge-num"><span class="gauge-score" style="color:${C}">${score}</span><span class="gauge-max">/ 100</span></div>
+    <div class="gauge-cap">Qualità</div>`;
   const main = el('div', 'verdict-main');
-  const badgeCls = v.level === 'ok' ? 'badge--ok' : v.level === 'warn' ? 'badge--warn' : 'badge--bad';
-  main.appendChild(el('span', 'badge ' + badgeCls, `<span class="dot"></span>${v.label}`));
+
+  // Badge COMPATIBILITÀ (asse distinto dai punti qualità)
+  const comp = getCompatibility(sol);
+  const badgeCls = comp.level === 'ok' ? 'badge--ok' : comp.level === 'warn' ? 'badge--warn' : 'badge--bad';
+  main.appendChild(el('span', 'badge ' + badgeCls, `<span class="dot"></span>${comp.label}`));
+  if (comp.reason) main.appendChild(el('div', 'verdict-reason', comp.reason));
+
+  // Nota OTTIMIZZABILE (solo manuale), separata dalla compatibilità
+  if (mode === 'manual') {
+    const opt = getOptimizable(sol);
+    if (opt) main.appendChild(el('div', 'verdict-opt', opt));
+  }
+
   main.appendChild(el('div', 'verdict-text', explain(sol)));
   wrap.appendChild(gauge); wrap.appendChild(main);
   return wrap;

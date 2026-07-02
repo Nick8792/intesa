@@ -166,6 +166,7 @@ input { font-family: inherit; }
 }
 .gauge-score { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 700; line-height: 1; }
 .gauge-max { font-size: 10px; color: var(--text-faint); margin-top: 2px; letter-spacing: .04em; }
+.gauge-cap { font-size: 10px; font-weight: 650; color: var(--text-faint); margin-top: 3px; letter-spacing: .06em; text-transform: uppercase; }
 
 .verdict-main { min-width: 0; }
 .badge {
@@ -180,6 +181,12 @@ input { font-family: inherit; }
 .badge--warn .dot { background: var(--amber); }
 .badge--bad { background: var(--red-weak); color: var(--red); }
 .badge--bad .dot { background: var(--red); }
+.verdict-reason { font-size: 12.5px; color: var(--amber); font-weight: 600; margin: -2px 0 7px; line-height: 1.35; }
+.verdict-opt {
+  font-size: 12.5px; color: var(--bonifico); font-weight: 600; margin: -2px 0 7px; line-height: 1.35;
+  padding-left: 16px; position: relative;
+}
+.verdict-opt::before { content: '▲'; position: absolute; left: 0; font-size: 10px; top: 1px; }
 .verdict-text { font-size: 13.5px; color: var(--text-soft); line-height: 1.4; }
 
 /* KPI strip */
