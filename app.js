@@ -153,8 +153,13 @@ function isHardValid(sol, input, cfg) {
   const m = sol.metrics;
   const tol = 1 + cfg.tolleranza / 100;
   if (Math.abs(m.venduto - input.prezzo) > 0.5) return false;
-  if (input.dispOggi > 0 && m.pagatoOggi > input.dispOggi * tol + 1e-6) return false;
+  // Disponibilità oggi = tetto commerciale RIGIDO: il pagamento iniziale non può
+  // mai superarla, nemmeno entro tolleranza (regola di business, sempre attiva).
+  if (input.dispOggi > 0 && m.pagatoOggi > input.dispOggi + 1e-6) return false;
   if (input.maxMensile > 0 && m.peak > input.maxMensile * tol + 1e-6) return false;
+  // N rate richieste = N pagamenti reali: ogni slot del piano deve avere un
+  // importo > 0,50 € (niente rate iniziali/vuote). Regola di business V1.
+  for (let i = 0; i < sol.totalM.length; i++) if (sol.totalM[i] <= 0.5) return false;
   for (const p of sol.alloc.prov) {
     if (p.amount <= 0) continue;
     if (p.amount > p._profile.maxImporto + 1e-6) return false;
@@ -243,9 +248,16 @@ function optimize(input, cfg, locks = {}) {
   // Il contesto di RICERCA conosce solo la fattibilità: accumula candidati.
   const ctx = { P, H, provMeta, candidates: [] };
 
+  // Acconto DERIVATO: se il cliente ha dichiarato una disponibilità (e l'acconto
+  // non è bloccato in manuale), l'acconto non è più una dimensione di ricerca:
+  // viene derivato al volo perché il pagamento di oggi coincida con la
+  // disponibilità concordata. La ricerca sui provider resta invariata.
+  const deriveA = input.dispOggi > 0 && locks.A == null;
+
   // Fase 1 — coarse
   scanGrid(ctx, input, cfg, {
-    aVals: locks.A != null ? [locks.A] : range(0, P, coarse),
+    deriveA,
+    aVals: locks.A != null ? [locks.A] : (deriveA ? [0] : range(0, P, coarse)),
     provVals: provMeta.map((pm) => (pm.lock.amount != null ? [pm.lock.amount] : amtRange(0, pm.maxI, coarse, pm.minI))),
   });
 
@@ -254,7 +266,8 @@ function optimize(input, cfg, locks = {}) {
   if (cb) {
     const win = coarse;
     scanGrid(ctx, input, cfg, {
-      aVals: locks.A != null ? [locks.A] : range(Math.max(0, cb.alloc.A - win), Math.min(P, cb.alloc.A + win), fine),
+      deriveA,
+      aVals: locks.A != null ? [locks.A] : (deriveA ? [0] : range(Math.max(0, cb.alloc.A - win), Math.min(P, cb.alloc.A + win), fine)),
       provVals: provMeta.map((pm, i) => {
         if (pm.lock.amount != null) return [pm.lock.amount];
         const amt = cb.alloc.prov[i].amount;
@@ -267,9 +280,8 @@ function optimize(input, cfg, locks = {}) {
 }
 
 function scanGrid(ctx, input, cfg, g) {
-  const tol = 1 + cfg.tolleranza / 100;
   for (const A of g.aVals) {
-    if (input.dispOggi > 0 && A > input.dispOggi * tol + 1e-6) continue;
+    if (!g.deriveA && input.dispOggi > 0 && A > input.dispOggi + 1e-6) continue;
     recurseProv(ctx, input, cfg, g, A, 0, ctx.P - A, []);
   }
 }
@@ -278,12 +290,30 @@ function recurseProv(ctx, input, cfg, g, A, idx, remaining, chosen) {
   const { provMeta, P } = ctx;
   if (idx === provMeta.length) {
     const sum = chosen.reduce((s, c) => s + c, 0);
-    const B = round2(P - A - sum);
+    let a = A;
+    // Acconto DERIVATO (vedi optimize): l'acconto riempie il residuo perché il
+    // pagamento di oggi = disponibilità. NON riduce i provider — questi sono già
+    // stati scelti dalla ricerca: l'acconto copre solo la parte non coperta dalle
+    // loro prime rate. Se i provider da soli superano già la disponibilità, la
+    // combinazione non è ammissibile e viene scartata (coerente con la trattativa).
+    if (g.deriveA) {
+      let Hc = input.nRate;
+      for (let i = 0; i < chosen.length; i++) if (chosen[i] > 0) Hc = Math.max(Hc, provMeta[i].rate);
+      let provFirst = 0;
+      for (let i = 0; i < chosen.length; i++) {
+        if (chosen[i] <= 0) continue;
+        provFirst += buildProviderMonthly(chosen[i], provMeta[i].rate, Hc, provMeta[i].profile).arr[0];
+      }
+      a = round2(input.dispOggi - provFirst);
+      if (a < -1e-6) return; // i provider da soli sforano la disponibilità concordata
+      a = Math.max(0, a);
+    }
+    const B = round2(P - a - sum);
     if (B < -1e-6) return;
     const prov = chosen.map((amt, i) => ({
       id: provMeta[i].id, amount: amt, rate: amt > 0 ? provMeta[i].rate : 0, _profile: provMeta[i].profile,
     }));
-    const sol = buildSchedule({ A, B: Math.max(0, B), prov }, input, cfg);
+    const sol = buildSchedule({ A: a, B: Math.max(0, B), prov }, input, cfg);
     if (!isHardValid(sol, input, cfg)) return; // fattibilità (ricerca), non scoring
     ctx.candidates.push(sol);
     return;
@@ -713,7 +743,13 @@ function getOptimizable(sol) {
    ========================================================================== */
 function renderResult(sol, mode) {
   const root = $('#result'); root.innerHTML = '';
-  if (!sol) { root.appendChild(renderNoSolution(mode)); $('#actions').hidden = true; return; }
+  if (!sol) {
+    const inp = state.input;
+    if (inp.dispOggi > 0 && inp.dispOggi >= inp.prezzo - 0.5 && inp.nRate > 1) {
+      root.appendChild(renderIncoherence(inp)); $('#actions').hidden = true; return;
+    }
+    root.appendChild(renderNoSolution(mode)); $('#actions').hidden = true; return;
+  }
   $('#actions').hidden = false;
   root.appendChild(renderVerdict(sol, mode));
   root.appendChild(renderKpis(sol));
@@ -904,6 +940,20 @@ const cell = (v) => (v > 0.005 ? eur(v) : '—');
 const sum = (a) => round2(a.reduce((s, x) => s + x, 0));
 
 /* --- Nessuna soluzione --- */
+// Caso 1: la disponibilità di oggi copre l'intero ticket ma sono richieste più
+// rate. Non cambiamo autonomamente un parametro scelto dal sales: segnaliamo
+// l'incoerenza e lasciamo a lui la decisione.
+function renderIncoherence(inp) {
+  const box = el('div', 'nosol nosol--warn');
+  box.appendChild(el('h3', null, 'Configurazione incoerente'));
+  box.appendChild(el('p', null,
+    `La disponibilità di oggi (${eur(inp.dispOggi)}) copre l'intero ticket (${eur(inp.prezzo)}), ma sono richieste ${inp.nRate} rate. Non è possibile dilazionare un importo già interamente coperto oggi.`));
+  const ul = el('ul');
+  ul.appendChild(el('li', null, 'Imposta <b>1 rata</b> per un pagamento unico oggi, oppure'));
+  ul.appendChild(el('li', null, 'riduci la <b>disponibilità di oggi</b> per lasciare spazio alle rate successive.'));
+  box.appendChild(ul);
+  return box;
+}
 function renderNoSolution(mode) {
   const inp = state.input, box = el('div', 'nosol');
   box.appendChild(el('h3', null, 'Nessuna proposta compatibile'));

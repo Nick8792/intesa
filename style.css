@@ -272,6 +272,7 @@ input { font-family: inherit; }
   border-radius: var(--r); box-shadow: var(--shadow); padding: 18px;
 }
 .nosol h3 { margin: 0 0 6px; font-size: 16px; color: var(--red); }
+.nosol--warn h3 { color: var(--amber); }
 .nosol p { margin: 0 0 4px; font-size: 13.5px; color: var(--text-soft); }
 .nosol ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--text-soft); }
 .nosol li { margin-bottom: 3px; }
