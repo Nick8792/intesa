@@ -739,8 +739,7 @@ function renderVerdict(sol, mode) {
       <circle class="gauge-arc" cx="46" cy="46" r="40" fill="none" stroke="${C}" stroke-width="8" stroke-linecap="round"
         stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" style="transition:stroke-dashoffset .5s ease"/>
     </svg>
-    <div class="gauge-num"><span class="gauge-score" style="color:${C}">${score}</span><span class="gauge-max">/ 100</span></div>
-    <div class="gauge-cap">Qualità</div>`;
+    <div class="gauge-num"><span class="gauge-score" style="color:${C}">${score}</span><span class="gauge-max">/ 100</span></div>`;
   const main = el('div', 'verdict-main');
 
   // Badge COMPATIBILITÀ (asse distinto dai punti qualità)

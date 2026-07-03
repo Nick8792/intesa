@@ -166,7 +166,6 @@ input { font-family: inherit; }
 }
 .gauge-score { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 700; line-height: 1; }
 .gauge-max { font-size: 10px; color: var(--text-faint); margin-top: 2px; letter-spacing: .04em; }
-.gauge-cap { font-size: 10px; font-weight: 650; color: var(--text-faint); margin-top: 3px; letter-spacing: .06em; text-transform: uppercase; }
 
 .verdict-main { min-width: 0; }
 .badge {
