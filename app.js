@@ -552,13 +552,32 @@ const DEFAULT_CONFIG = {
 };
 
 const CFG_KEY = 'intesa.config.v2';
+const MIGR_COMM_KEY = 'intesa.migr.commissioni.v1'; // flag migrazione commissioni provider (una-tantum)
 
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CFG_KEY);
-    if (!raw) return structuredClone(DEFAULT_CONFIG);
-    return mergeConfig(structuredClone(DEFAULT_CONFIG), JSON.parse(raw));
+    const cfg = raw ? mergeConfig(structuredClone(DEFAULT_CONFIG), JSON.parse(raw)) : structuredClone(DEFAULT_CONFIG);
+    if (migrateCommissioni(cfg) && raw) { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+    return cfg;
   } catch (e) { return structuredClone(DEFAULT_CONFIG); }
+}
+// Migrazione una-tantum: le installazioni precedenti alla feature "Commissioni"
+// hanno Scalapay/Klarna a 0 (dal vecchio campo dormiente). Se il valore non è mai
+// stato impostato (= 0), lo portiamo ai default attuali (7,5%), in modo trasparente.
+// Un valore impostato volontariamente (≠ 0) non viene mai toccato. Gira una sola
+// volta grazie al flag in localStorage.
+function migrateCommissioni(cfg) {
+  try { if (localStorage.getItem(MIGR_COMM_KEY)) return false; } catch (e) { return false; }
+  let changed = false;
+  for (const p of cfg.providers || []) {
+    if ((p.id === 'scalapay' || p.id === 'klarna') && (p.commissione == null || p.commissione === 0)) {
+      const d = DEFAULT_CONFIG.providers.find((x) => x.id === p.id);
+      if (d && p.commissione !== d.commissione) { p.commissione = d.commissione; changed = true; }
+    }
+  }
+  try { localStorage.setItem(MIGR_COMM_KEY, '1'); } catch (e) {}
+  return changed;
 }
 function mergeConfig(base, over) {
   for (const k in over) {
@@ -775,39 +794,65 @@ function renderResult(sol, mode) {
 
 // Calcolo commissioni (PURO, informativo): legge la soluzione già calcolata dal
 // motore. Non influenza in alcun modo algoritmo, scoring, ranking o priorità.
+// Suddivisione: "oggi" = ciò che matura subito (acconto bonifico + interi importi
+// BNPL, anticipati all'azienda); "future" = solo le rate di credito del bonifico.
 function calcCommissioni(sol, cfg) {
-  const rows = [];
-  const bonifico = round2((sol.metrics.bonificoIniziale || 0) + (sol.metrics.bonificoCredito || 0));
+  const A = sol.metrics.bonificoIniziale || 0; // acconto (oggi)
+  const B = sol.metrics.bonificoCredito || 0;  // credito bonifico (futuro)
   const pctB = cfg.commissioneBonifico || 0;
-  if (bonifico > 0.5) rows.push({ nome: 'Bonifico', importo: bonifico, pct: pctB, commissione: round2((bonifico * pctB) / 100) });
+
+  const oggi = [];
+  if (A > 0.5) oggi.push({ nome: 'Bonifico (acconto)', importo: round2(A), pct: pctB, commissione: round2((A * pctB) / 100) });
   for (const p of sol.alloc.prov) {
     if (p.amount <= 0.5) continue; // strumenti non usati: nascosti
     const pct = (p._profile && p._profile.commissione) || 0;
-    rows.push({ nome: (p._profile && p._profile.nome) || p.id, importo: round2(p.amount), pct, commissione: round2((p.amount * pct) / 100) });
+    oggi.push({ nome: (p._profile && p._profile.nome) || p.id, importo: round2(p.amount), pct, commissione: round2((p.amount * pct) / 100) });
   }
-  // Il totale è la somma delle singole commissioni già arrotondate: garantisce
-  // che "totale = somma delle righe" sempre.
-  const totale = round2(rows.reduce((s, r) => s + r.commissione, 0));
-  return { rows, totale };
+  const totaleOggi = round2(oggi.reduce((s, r) => s + r.commissione, 0));
+
+  const future = [];
+  if (B > 0.5) future.push({ nome: 'Bonifico (credito)', importo: round2(B), pct: pctB, commissione: round2((B * pctB) / 100) });
+  const totaleFuture = round2(future.reduce((s, r) => s + r.commissione, 0));
+
+  // Il totale complessivo resta identico alla somma di tutte le righe.
+  const totale = round2(totaleOggi + totaleFuture);
+  return { oggi, totaleOggi, future, totaleFuture, totale };
 }
 function fmtPct(p) { return (Math.round(p * 100) / 100).toLocaleString('it-IT') + '%'; }
 
 function renderCommissioni(sol, cfg) {
-  const { rows, totale } = calcCommissioni(sol, cfg);
+  const c = calcCommissioni(sol, cfg);
   const box = el('div', 'commissioni');
-  box.appendChild(el('div', 'commissioni-title', 'Commissioni previste'));
-  rows.forEach((r) => {
+
+  const commRow = (r) => {
     const row = el('div', 'commissioni-row');
     row.appendChild(el('span', 'c-nome', r.nome));
     row.appendChild(el('span', 'c-imp', `${eur(r.importo)} · ${fmtPct(r.pct)}`));
     row.appendChild(el('span', 'c-val', eur(r.commissione)));
-    box.appendChild(row);
-  });
-  const tot = el('div', 'commissioni-row commissioni-tot');
-  tot.appendChild(el('span', 'c-nome', 'Totale commissioni'));
-  tot.appendChild(el('span', 'c-imp', ''));
-  tot.appendChild(el('span', 'c-val', eur(totale)));
-  box.appendChild(tot);
+    return row;
+  };
+  const totRow = (label, val, cls) => {
+    const row = el('div', 'commissioni-row ' + (cls || 'commissioni-sub'));
+    row.appendChild(el('span', 'c-nome', label));
+    row.appendChild(el('span', 'c-imp', ''));
+    row.appendChild(el('span', 'c-val', eur(val)));
+    return row;
+  };
+
+  // Maturate oggi — il dato più importante in trattativa
+  box.appendChild(el('div', 'commissioni-title', 'Commissioni maturate oggi'));
+  c.oggi.forEach((r) => box.appendChild(commRow(r)));
+  box.appendChild(totRow('Totale oggi', c.totaleOggi, 'commissioni-sub'));
+
+  // Future — solo dalle rate di credito del bonifico (mostrate se esistono)
+  if (c.totaleFuture > 0.005) {
+    box.appendChild(el('div', 'commissioni-title commissioni-title--sec', 'Commissioni future'));
+    c.future.forEach((r) => box.appendChild(commRow(r)));
+    box.appendChild(totRow('Totale future', c.totaleFuture, 'commissioni-sub'));
+    box.appendChild(totRow('Commissioni complessive', c.totale, 'commissioni-tot'));
+  } else {
+    box.appendChild(el('div', 'commissioni-allnow', 'Tutto maturato oggi'));
+  }
   return box;
 }
 
@@ -1208,7 +1253,7 @@ function admExtraSelect(p, label, key, opts) {
   const row = el('div', 'adm-row'); row.appendChild(el('label', null, label));
   const sel = document.createElement('select');
   opts.forEach(([t, v]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (p.extra[key] === v) o.selected = true; sel.appendChild(o); });
-  sel.onchange = () => { p.extra[key] = sel.value; saveConfig(); refreshAdmin(); compute(); };
+  sel.onchange = () => { p.extra[key] = sel.value; saveConfig(); compute(); refreshAdmin(); };
   row.appendChild(sel);
   return row;
 }
@@ -1265,7 +1310,9 @@ function crSelect(label, key, opts, refresh) {
   const row = el('div', 'adm-row'); row.appendChild(el('label', null, label));
   const sel = document.createElement('select');
   opts.forEach(([t, v]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (CONFIG.commercialRounding[key] === v) o.selected = true; sel.appendChild(o); });
-  sel.onchange = () => { CONFIG.commercialRounding[key] = sel.value; saveConfig(); if (refresh) refreshAdmin(); compute(); };
+  // Gli arrotondamenti sono regole di calcolo: la proposta si aggiorna SEMPRE e
+  // subito. Ricalcolo prima, poi (se serve) ricostruisco l'Admin.
+  sel.onchange = () => { CONFIG.commercialRounding[key] = sel.value; saveConfig(); compute(); if (refresh) refreshAdmin(); };
   row.appendChild(sel);
   return row;
 }

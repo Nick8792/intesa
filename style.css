@@ -271,13 +271,18 @@ input { font-family: inherit; }
   background: var(--card); border: 1px solid var(--hairline);
 }
 .commissioni-title { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 10px; }
+.commissioni-title--sec { margin-top: 14px; }
 .commissioni-row { display: grid; grid-template-columns: 1fr auto auto; align-items: baseline; gap: 10px; padding: 4px 0; }
 .commissioni-row .c-nome { font-size: 13.5px; color: var(--text); font-weight: 600; }
 .commissioni-row .c-imp { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-faint); }
 .commissioni-row .c-val { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13.5px; font-weight: 650; color: var(--text); min-width: 74px; text-align: right; }
-.commissioni-tot { margin-top: 6px; padding-top: 9px; border-top: 1.5px solid var(--hairline-strong); }
+.commissioni-sub { margin-top: 4px; padding-top: 7px; border-top: 1px dashed var(--hairline); }
+.commissioni-sub .c-nome { font-weight: 700; color: var(--text-soft); }
+.commissioni-sub .c-val { color: var(--emerald-deep); font-weight: 700; }
+.commissioni-tot { margin-top: 8px; padding-top: 9px; border-top: 1.5px solid var(--hairline-strong); }
 .commissioni-tot .c-nome { font-weight: 700; }
 .commissioni-tot .c-val { color: var(--emerald-deep); font-weight: 750; font-size: 15px; }
+.commissioni-allnow { margin-top: 8px; font-size: 12px; color: var(--text-faint); font-style: italic; }
 
 /* No solution */
 .nosol {
