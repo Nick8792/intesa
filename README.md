@@ -127,15 +127,80 @@ separata dalla compatibilità.
 Le altre tre priorità (Equilibrata, Rata costante, Min. bonifico) restano
 invariate.
 
-### Preferenza tra provider (politica commerciale)
+### Selezione tra soluzioni equivalenti (tie-break commerciale)
 
-L'ordine dei provider nel Pannello Amministratore (↑/↓) è anche l'**ordine di
-preferenza**: di default **Scalapay → Klarna → Provider personalizzato**. È usato
-come **tie-break**: a parità di risultato (stesso piano e stesso punteggio) il
-motore attribuisce l'importo al provider più preferito (Scalapay). Se invece
-Klarna produce un punteggio più alto o permette di rispettare vincoli che
-Scalapay non può soddisfare (massimali, numero di rate), il motore sceglie
-comunque Klarna: la preferenza non riduce mai la qualità della soluzione.
+Il motore non sceglie solo la soluzione col punteggio matematico più alto, ma —
+tra proposte **equivalenti o praticamente equivalenti** (entro una piccola soglia
+di punteggio) — quella che un consulente **spiegherebbe più facilmente al
+cliente**. L'ordine di preferenza è:
+
+1. **punteggio migliore** (la soglia è piccola: una soluzione *realmente* migliore
+   non viene mai scavalcata);
+2. **meno strumenti** utilizzati (una proposta con 2 strumenti è più semplice di
+   una con 3);
+3. **importi più tondi** (es. 3.000 + 2.000 invece di 2.800 + 2.100);
+4. **preferenza provider** — di default **Scalapay → Klarna → Provider
+   personalizzato**, riordinabile in Admin (↑/↓);
+5. **piano più regolare** (rate più uniformi).
+
+È un vero *tie-break*: interviene solo quando le soluzioni sono commercialmente
+equivalenti, non altera mai la scelta quando una proposta è davvero migliore, e
+non tocca i vincoli commerciali (disponibilità, numero di rate, tetto mensile).
+
+### Regole di business sui pagamenti (sempre attive)
+
+Due vincoli di **fattibilità** (applicati prima dello scoring, non configurabili in V1):
+
+- **Disponibilità oggi = pagamento iniziale di riferimento.** Non è un tetto da
+  minimizzare: è l'importo che il cliente ha accettato di investire oggi. Il
+  motore lo usa **integralmente** come pagamento di oggi e costruisce il resto
+  del piano attorno ad esso — l'**acconto** viene *derivato* per riempire la
+  parte non coperta dalle prime rate dei provider, senza ridurne l'uso (i
+  provider restano guidati dalla priorità: es. Scalapay-first con Massimizza VPL).
+  Se lasciata a 0 significa "nessun limite". Se la disponibilità copre l'intero
+  ticket ma sono richieste più rate, il sistema segnala una **configurazione
+  incoerente** e lascia al sales la scelta (pagamento unico o ridurre la
+  disponibilità), senza cambiare da solo il numero di rate.
+- **N rate = N pagamenti reali.** Se il cliente sceglie N rate, ogni mensilità —
+  inclusa quella di oggi, che è la prima rata — deve avere un importo maggiore di
+  0,50 €. Le soluzioni con rate iniziali o intermedie vuote (es. `0 / 1.500 /
+  1.500` per 3 rate) vengono escluse: commercialmente equivarrebbero a una
+  rateizzazione con meno pagamenti di quelli richiesti.
+- **Pagamento iniziale e rata mensile sono vincoli distinti.** "Disponibilità
+  oggi" vincola **solo** il pagamento iniziale; "Max rata mensile" vincola **solo**
+  le rate dei mesi successivi. Il pagamento di oggi **non** viene mai confrontato
+  con la rata mensile massima: riflette il processo reale di vendita (prima si
+  fissa quanto il cliente investe oggi, poi il motore costruisce il piano sul
+  residuo rispettando numero di rate, priorità ed eventuale tetto mensile). Così
+  `1.800 € oggi + max 600 €/mese` è una trattativa valida, non un'incoerenza.
+
+Questi vincoli non toccano l'uniformità né i pesi: agiscono solo escludendo le
+soluzioni non ammissibili, lasciando invariate tutte le altre.
+
+### Commissioni previste (informativo)
+
+Sotto la proposta, un riquadro **"Commissioni"** stima le commissioni del
+consulente in base alla soluzione generata, suddivise per orizzonte temporale —
+il dato più utile in trattativa:
+
+- **Maturate oggi**: ciò che il consulente matura subito — l'**acconto** del
+  bonifico e l'**intero importo** di ogni BNPL (Scalapay/Klarna), che sono
+  anticipati all'azienda. Una riga per metodo (importo · % → commissione) + totale.
+- **Future**: solo le commissioni sulle **rate di credito** del bonifico + totale.
+- **Complessive**: somma delle due (identica al totale calcolato in precedenza).
+
+Gli strumenti non usati sono nascosti; se tutto matura oggi, il riquadro lo
+segnala e mostra solo il blocco "oggi". Si aggiorna **live** a ogni ricalcolo.
+
+È una funzione **puramente informativa**: legge la soluzione già calcolata e non
+influisce in alcun modo su motore, ricerca, scoring, ranking, priorità,
+compatibilità o VPL. Le percentuali sono **configurabili dal Pannello
+Amministratore** (gruppo *Commissioni*): Bonifico e una riga per ciascun provider.
+Default: Bonifico 10%, Scalapay 7,5%, Klarna 7,5%, Provider personalizzato 0%.
+Sono salvate nella configurazione, incluse in Export/Import e disponibili offline.
+Le installazioni precedenti che avevano Scalapay/Klarna a 0% (dal vecchio campo
+dormiente) vengono **migrate automaticamente** ai default una sola volta, senza
+toccare eventuali valori impostati a mano.
 
 ### VPL — Valore per Lead
 
@@ -158,12 +223,20 @@ negativo *× Credito bonifico* se il credito concesso "costa" al lead.
 
 ### Smart Rounding
 
-Trovata la soluzione ottima, gli importi vengono arrotondati a valori
+Trovata la soluzione ottima, i **totali commerciali dei provider**
+(Scalapay, Klarna, eventuale Provider personalizzato) vengono arrotondati a valori
 **facili da comunicare** (multipli di 50, 100 o 250 €, configurabili), evitando
 cifre come 987 € o 2.143 €. Il residuo confluisce nel bonifico così che il
 **totale resti esatto**. Se l'arrotondamento violasse un vincolo o si
-discostasse troppo (oltre la soglia impostata), l'app mantiene gli importi
-esatti.
+discostasse troppo (oltre la soglia impostata), l'app mantiene gli importi esatti.
+
+**Il pagamento iniziale è intoccabile.** Quando il cliente dichiara una
+disponibilità di oggi, lo Smart Rounding **non arrotonda mai** l'acconto né il
+pagamento iniziale: dopo aver arrotondato i totali provider, **ri-deriva**
+l'acconto così che il pagamento di oggi resti *esattamente* uguale alla
+disponibilità concordata. Un accordo commerciale già preso con il cliente non
+viene mai alterato da un arrotondamento. (Senza disponibilità dichiarata,
+l'acconto è libero e viene arrotondato come gli altri importi.)
 
 ### Commercial Rounding (rate del bonifico)
 
