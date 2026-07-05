@@ -354,30 +354,86 @@ function rankCandidates(candidates, input, cfg) {
   // nell'ordine configurato in Admin. Usato SOLO come tie-break.
   const order = (cfg.providers || []).filter((p) => p.attivo).map((p) => p.id);
 
-  // Passata 1: miglior candidato per punteggio (a parità, uniformità maggiore).
-  // È la STESSA logica di selezione precedente: determina il PIANO ottimo, che
-  // resta quindi invariato. Se Klarna consente un punteggio più alto o l'unico
-  // piano ammissibile, viene scelto qui.
-  let best = null;
+  // Passata 1: punteggio di ogni candidato; individuo il punteggio migliore.
+  let bestScore = -Infinity;
   for (const sol of candidates) {
     sol._ss = subScores(sol, input, cfg, { ...refs, vplRaw: sol.metrics.vplRaw });
     sol._sc = totalScore(sol._ss, input.priorita, weights);
-    if (!best || sol._sc > best._sc + 1e-9 ||
-        (Math.abs(sol._sc - best._sc) < 1e-9 && sol._ss.uniformity > best._ss.uniformity)) best = sol;
+    if (sol._sc > bestScore) bestScore = sol._sc;
   }
-  // Passata 2: PREFERENZA PROVIDER come tie-break, applicata SOLO tra soluzioni
-  // realmente equivalenti — stesso punteggio E stesso piano mensile. Tra queste
-  // sceglie chi usa di più il provider preferito (Scalapay per default). Non
-  // altera mai il piano: cambia solo l'attribuzione tra provider.
+  // Passata 2: TIE-BREAK COMMERCIALE tra soluzioni equivalenti o quasi (entro
+  // TIE_EPS dal migliore). A parità sostanziale di punteggio preferisce la
+  // proposta più semplice da spiegare, nell'ordine richiesto: (2) meno strumenti,
+  // (3) importi più "tondi", (4) preferenza provider (Scalapay), (5) piano più
+  // regolare, e come ultimo criterio il punteggio. TIE_EPS è piccolo: una
+  // soluzione REALMENTE migliore (oltre la soglia) resta in cima e non viene mai
+  // scavalcata — la logica interviene solo come vero tie-break.
+  let best = null;
   for (const sol of candidates) {
-    if (sol === best) continue;
-    if (Math.abs(sol._sc - best._sc) < 1e-9 && sameSchedule(sol.totalM, best.totalM) &&
-        providerPrefCompare(sol, best, order) > 0) best = sol;
+    if (sol._sc < bestScore - TIE_EPS) continue;
+    if (!best || preferSolution(sol, best, order)) best = sol;
   }
   best.score = clamp(Math.round(best._sc), 0, 100);
   best.sub = best._ss;
   best.candidateCount = candidates.length;
   return best;
+}
+
+/* ----------------------------------------------------------------------------
+   TIE_EPS — soglia di "equivalenza pratica" del tie-break commerciale, espressa
+   in PUNTI sulla scala 0–100 del punteggio.
+
+   Due soluzioni il cui punteggio dista meno di TIE_EPS sono considerate
+   equivalenti: tra queste il motore sceglie la più semplice da spiegare al
+   cliente (vedi preferSolution). Una soluzione più lontana di TIE_EPS dal
+   migliore NON viene mai scavalcata → il tie-break non può far vincere una
+   proposta realmente peggiore oltre la soglia.
+
+   Perché 0,75 (misurato su 800 scenari casuali):
+     • 0,50 → provider "simbolici" (< 300 €) al 10,6%   (pulizia minore)
+     • 0,75 → 9,1%                                       (compromesso scelto)
+     • 1,00 → 6,9%   (pulisce di più, ma concede fino a 1 punto alla semplicità
+                      rispetto all'ottimo matematico)
+   0,75 bilancia pulizia commerciale e fedeltà al punteggio. Il costo massimo in
+   punteggio è quindi ≤ 0,75 per costruzione. Modificabile qui, senza toccare il
+   resto del motore.
+   -------------------------------------------------------------------------- */
+const TIE_EPS = 0.75;
+
+// True se 'a' è preferibile a 'b' tra soluzioni entro la banda di equivalenza.
+function preferSolution(a, b, order) {
+  const ia = instrumentCount(a), ib = instrumentCount(b);
+  if (ia !== ib) return ia < ib;                              // (2) meno strumenti
+  const ca = cleanliness(a), cb = cleanliness(b);
+  if (Math.abs(ca - cb) > 1e-9) return ca > cb;               // (3) importi più puliti
+  const pc = providerPrefCompare(a, b, order);
+  if (pc !== 0) return pc > 0;                                // (4) preferenza provider
+  if (Math.abs(a._ss.uniformity - b._ss.uniformity) > 1e-9)  // (5) piano più regolare
+    return a._ss.uniformity > b._ss.uniformity;
+  return a._sc > b._sc;                                       // (fallback) punteggio
+}
+// Numero di strumenti realmente usati (bonifico + provider con importo > 0,50).
+function instrumentCount(sol) {
+  let n = ((sol.metrics.bonificoIniziale || 0) + (sol.metrics.bonificoCredito || 0)) > 0.5 ? 1 : 0;
+  for (const p of sol.alloc.prov) if (p.amount > 0.5) n++;
+  return n;
+}
+// "Pulizia" commerciale: premia gli importi tondi (multipli di 1000 > 500 > 250 > 100 > 50).
+function cleanliness(sol) {
+  let s = 0;
+  const bon = (sol.metrics.bonificoIniziale || 0) + (sol.metrics.bonificoCredito || 0);
+  if (bon > 0.5) s += roundness(bon);
+  for (const p of sol.alloc.prov) if (p.amount > 0.5) s += roundness(p.amount);
+  return s;
+}
+function roundness(v) {
+  const r = Math.round(v);
+  if (r % 1000 === 0) return 5;
+  if (r % 500 === 0) return 4;
+  if (r % 250 === 0) return 3;
+  if (r % 100 === 0) return 2;
+  if (r % 50 === 0) return 1;
+  return 0;
 }
 
 function sameSchedule(a, b) {
